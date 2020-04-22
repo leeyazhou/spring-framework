@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -325,7 +325,8 @@ public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFacto
 			this.allowEagerClassLoading = otherListableFactory.allowEagerClassLoading;
 			this.dependencyComparator = otherListableFactory.dependencyComparator;
 			// A clone of the AutowireCandidateResolver since it is potentially BeanFactoryAware...
-			setAutowireCandidateResolver(BeanUtils.instantiateClass(getAutowireCandidateResolver().getClass()));
+			setAutowireCandidateResolver(
+					BeanUtils.instantiateClass(otherListableFactory.getAutowireCandidateResolver().getClass()));
 			// Make resolvable dependencies (e.g. ResourceLoader) available here as well...
 			this.resolvableDependencies.putAll(otherListableFactory.resolvableDependencies);
 		}
@@ -397,6 +398,9 @@ public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFacto
 			@Override
 			public Stream<T> orderedStream() {
 				String[] beanNames = getBeanNamesForTypedStream(requiredType);
+				if (beanNames.length == 0) {
+					return Stream.empty();
+				}
 				Map<String, T> matchingBeans = new LinkedHashMap<>(beanNames.length);
 				for (String beanName : beanNames) {
 					Object beanInstance = getBean(beanName);
@@ -472,10 +476,10 @@ public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFacto
 	public String[] getBeanNamesForType(ResolvableType type, boolean includeNonSingletons, boolean allowEagerInit) {
 		Class<?> resolved = type.resolve();
 		if (resolved != null && !type.hasGenerics()) {
-			return getBeanNamesForType(resolved, includeNonSingletons, includeNonSingletons);
+			return getBeanNamesForType(resolved, includeNonSingletons, allowEagerInit);
 		}
 		else {
-			return doGetBeanNamesForType(type, includeNonSingletons, includeNonSingletons);
+			return doGetBeanNamesForType(type, includeNonSingletons, allowEagerInit);
 		}
 	}
 
@@ -973,6 +977,9 @@ public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFacto
 		if (existingDefinition != null || containsSingleton(beanName)) {
 			resetBeanDefinition(beanName);
 		}
+		else if (isConfigurationFrozen()) {
+			clearByTypeCache();
+		}
 	}
 
 	@Override
@@ -1035,7 +1042,9 @@ public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFacto
 		for (String bdName : this.beanDefinitionNames) {
 			if (!beanName.equals(bdName)) {
 				BeanDefinition bd = this.beanDefinitionMap.get(bdName);
-				if (beanName.equals(bd.getParentName())) {
+				// Ensure bd is non-null due to potential concurrent modification
+				// of the beanDefinitionMap.
+				if (bd != null && beanName.equals(bd.getParentName())) {
 					resetBeanDefinition(bdName);
 				}
 			}
@@ -1363,9 +1372,11 @@ public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFacto
 			TypeConverter converter = (typeConverter != null ? typeConverter : getTypeConverter());
 			Object result = converter.convertIfNecessary(matchingBeans.values(), type);
 			if (result instanceof List) {
-				Comparator<Object> comparator = adaptDependencyComparator(matchingBeans);
-				if (comparator != null) {
-					((List<?>) result).sort(comparator);
+				if (((List<?>) result).size() > 1) {
+					Comparator<Object> comparator = adaptDependencyComparator(matchingBeans);
+					if (comparator != null) {
+						((List<?>) result).sort(comparator);
+					}
 				}
 			}
 			return result;
